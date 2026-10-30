@@ -1,0 +1,391 @@
+		<!-- SLF4J and Logback Logging -->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
+			<version>1.7.36</version>
+		</dependency>
+		<dependency>
+			<groupId>ch.qos.logback</groupId>
+			<artifactId>logback-classic</artifactId>
+			<version>1.2.13</version>
+		</dependency>
+
+
+
+
+
+
+    package com.deloitte.controller;
+
+import javax.servlet.http.HttpSession;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+
+import com.deloitte.dto.LoginDto;
+import com.deloitte.dto.SignUpDto;
+import com.deloitte.model.User;
+import com.deloitte.service.UserService;
+
+@Controller
+@RequestMapping("")
+public class UserController {
+
+    // 1. SLF4J Logger
+    private static final Logger log = LoggerFactory.getLogger(UserController.class);
+
+    private final UserService userService;
+
+    @Autowired
+    public UserController(UserService userService) {
+        this.userService = userService;
+    }
+
+    // ==========================================
+    // 1. SIGN UP (GET & POST)
+    // ==========================================
+
+    @GetMapping("/signup")
+    public String showSignupPage(Model model) {
+        if (!model.containsAttribute("signUpDto")) {
+            model.addAttribute("signUpDto", new SignUpDto());
+        }
+        return "signup";
+    }
+
+    @PostMapping("/signup")
+    public String processSignup(@ModelAttribute("signUpDto") SignUpDto signUpDto,
+                                BindingResult bindingResult,
+                                Model model) {
+        log.info("Processing sign up request for email: {}", signUpDto.getEmail());
+
+        // --- 2. Server-Side Form Validation using BindingResult ---
+        if (signUpDto.getEmail() == null || signUpDto.getEmail().trim().isEmpty()) {
+            bindingResult.rejectValue("email", "NotEmpty", "Email is required.");
+        } else if (!signUpDto.getEmail().matches("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
+            bindingResult.rejectValue("email", "Pattern", "Please enter a valid email address (e.g. user@example.com).");
+        }
+
+        if (signUpDto.getPassword() == null || signUpDto.getPassword().trim().isEmpty()) {
+            bindingResult.rejectValue("password", "NotEmpty", "Password is required.");
+        } else if (signUpDto.getPassword().trim().length() <= 8) {
+            bindingResult.rejectValue("password", "Size", "Password must be more than 8 characters in length.");
+        }
+
+        if (signUpDto.getRole() == null || signUpDto.getRole().trim().isEmpty() ||
+            (!signUpDto.getRole().equalsIgnoreCase("user") && !signUpDto.getRole().equalsIgnoreCase("admin"))) {
+            bindingResult.rejectValue("role", "Invalid", "Please select a valid role (User or Admin).");
+        }
+
+        // Return back to signup if validation errors exist
+        if (bindingResult.hasErrors()) {
+            log.warn("Sign up form validation failed for email: {} with {} error(s)", 
+                     signUpDto.getEmail(), bindingResult.getErrorCount());
+            return "signup";
+        }
+
+        // Register user via Service Layer
+        int result = userService.register(signUpDto);
+        if (result == -3) {
+            log.warn("Sign up rejected: Email already registered - {}", signUpDto.getEmail());
+            bindingResult.rejectValue("email", "Duplicate", "Email already registered. Please log in.");
+            return "signup";
+        } else if (result <= 0) {
+            log.error("Sign up failed in database for email: {}", signUpDto.getEmail());
+            model.addAttribute("error", "Registration failed due to a system error. Please check your details.");
+            return "signup";
+        }
+
+        log.info("User registered successfully: {} ({})", signUpDto.getEmail(), signUpDto.getRole());
+
+        // FIX: Post-Redirect-Get pattern. Redirects to /login?registered=true
+        // This ensures the browser calls GET /login, preventing the missing 'loginDto' crash!
+        return "redirect:/login?registered=true";
+    }
+
+    // ==========================================
+    // 2. LOGIN (GET & POST)
+    // ==========================================
+
+    @GetMapping("/login")
+    public String showLoginPage(@RequestParam(value = "registered", required = false) String registered,
+                                @RequestParam(value = "msg", required = false) String msg,
+                                @RequestParam(value = "logout", required = false) String logout,
+                                Model model) {
+        // Guarantee loginDto is always in the model
+        if (!model.containsAttribute("loginDto")) {
+            model.addAttribute("loginDto", new LoginDto());
+        }
+        if ("true".equalsIgnoreCase(registered)) {
+            model.addAttribute("successMsg", "Sign Up successful! Please log in with your credentials.");
+        }
+        if (msg != null && !msg.trim().isEmpty()) {
+            model.addAttribute("infoMsg", msg);
+        }
+        if ("true".equalsIgnoreCase(logout)) {
+            model.addAttribute("infoMsg", "You have been logged out successfully.");
+        }
+        return "login";
+    }
+
+    @PostMapping("/login")
+    public String processLogin(@ModelAttribute("loginDto") LoginDto loginDto,
+                               BindingResult bindingResult,
+                               Model model, HttpSession session) {
+        log.info("Processing login attempt for email: {}", loginDto.getEmail());
+
+        // --- 2. Server-Side Form Validation ---
+        if (loginDto.getEmail() == null || loginDto.getEmail().trim().isEmpty()) {
+            bindingResult.rejectValue("email", "NotEmpty", "Email is required.");
+        }
+        if (loginDto.getPassword() == null || loginDto.getPassword().trim().isEmpty()) {
+            bindingResult.rejectValue("password", "NotEmpty", "Password is required.");
+        }
+
+        if (bindingResult.hasErrors()) {
+            log.warn("Login form validation failed for: {}", loginDto.getEmail());
+            return "login";
+        }
+
+        User user = userService.login(loginDto);
+        if (user == null) {
+            log.warn("Authentication failed for email: {}", loginDto.getEmail());
+            model.addAttribute("error", "Invalid email or password.");
+            return "login";
+        }
+
+        log.info("User logged in successfully: {} (Role: {})", user.getEmail(), user.getRole());
+        session.setAttribute("user", user);
+
+        // Check if there was a pending flight booking redirection
+        Long pendingFlightId = (Long) session.getAttribute("redirectFlightId");
+        if (pendingFlightId != null) {
+            session.removeAttribute("redirectFlightId");
+            return "redirect:/booking/form?flightId=" + pendingFlightId;
+        }
+
+        // Role-based dashboard redirection
+        if ("admin".equalsIgnoreCase(user.getRole())) {
+            return "redirect:/admin/dashboard";
+        } else {
+            return "redirect:/user/dashboard";
+        }
+    }
+
+    // ==========================================
+    // 3. LOGOUT & USER DASHBOARD
+    // ==========================================
+
+    @GetMapping("/logout")
+    public String logout(HttpSession session) {
+        if (session != null) {
+            User user = (User) session.getAttribute("user");
+            if (user != null) {
+                log.info("Logging out user: {}", user.getEmail());
+            }
+            session.invalidate();
+        }
+        return "redirect:/login?logout=true";
+    }
+
+    @GetMapping("/user/dashboard")
+    public String userDashboard(HttpSession session, Model model) {
+        User user = (User) session.getAttribute("user");
+        if (user == null) {
+            return "redirect:/login?msg=Please log in to access your dashboard.";
+        }
+        if ("admin".equalsIgnoreCase(user.getRole())) {
+            return "redirect:/admin/dashboard";
+        }
+        model.addAttribute("user", user);
+        return "user-dashboard";
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    package com.deloitte.exception;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.ControllerAdvice;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+
+@ControllerAdvice
+public class GlobalExceptionHandler {
+
+    // SLF4J Logger
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    // 1. Handles Custom Application Exceptions (e.g. not enough seats, invalid flight)
+    @ExceptionHandler(FlightAppException.class)
+    public String handleFlightAppException(FlightAppException ex, Model model) {
+        log.warn("Handled FlightAppException: {}", ex.getMessage());
+        model.addAttribute("errorMessage", ex.getMessage());
+        return "error";
+    }
+
+    // 2. Handles Database & SQL Exceptions gracefully without exposing stack trace
+    @ExceptionHandler(DataAccessException.class)
+    public String handleDatabaseException(DataAccessException ex, Model model) {
+        log.error("Database access error occurred: {}", ex.getMessage(), ex);
+        model.addAttribute("errorMessage", "A database error occurred. Please verify your database connection.");
+        model.addAttribute("errorDetails", ex.getRootCause() != null ? ex.getRootCause().getMessage() : ex.getMessage());
+        return "error";
+    }
+
+    // 3. Fallback for Any Unexpected Runtime Exceptions
+    @ExceptionHandler(Exception.class)
+    public String handleGeneralException(Exception ex, Model model) {
+        log.error("Unexpected error caught by GlobalExceptionHandler: {}", ex.getMessage(), ex);
+        model.addAttribute("errorMessage", "An unexpected error occurred. Please try again or contact support.");
+        model.addAttribute("errorDetails", ex.getMessage());
+        return "error";
+    }
+}
+
+
+
+
+
+
+
+
+<%@ page language="java" contentType="text/html; charset=UTF-8" pageEncoding="UTF-8"%>
+<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>
+<%@ taglib prefix="form" uri="http://www.springframework.org/tags/form" %>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flight Reservation - Sign Up</title>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text-dark: #1e293b;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        body { background: var(--bg); color: var(--text-dark); min-height: 100vh; display: flex; flex-direction: column; }
+        
+        .navbar { background: #111827; color: white; padding: 0.9rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+        .navbar-brand { font-size: 1.25rem; font-weight: 700; color: #ffffff; text-decoration: none; }
+        .navbar-links a { color: #d1d5db; text-decoration: none; font-size: 0.95rem; font-weight: 500; margin-left: 1.25rem; }
+        .navbar-links a:hover, .navbar-links a.active { color: #ffffff; }
+        
+        .auth-container { flex: 1; display: flex; justify-content: center; align-items: center; padding: 2.5rem 1rem; }
+        .auth-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 0.75rem; width: 100%; max-width: 420px; padding: 2.25rem; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.08); }
+        .auth-card h2 { font-size: 1.5rem; margin-bottom: 0.5rem; color: #0f172a; display: flex; align-items: center; gap: 0.5rem; }
+        .auth-card p.sub { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+        
+        .form-group { margin-bottom: 1.25rem; }
+        label { display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.4rem; color: #334155; }
+        input[type="text"], input[type="email"], input[type="password"], select { width: 100%; padding: 0.75rem 0.9rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
+        input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15); }
+        
+        .hint { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .field-error { color: #dc2626; font-size: 0.825rem; margin-top: 0.35rem; display: block; font-weight: 500; }
+        
+        .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 0.75rem 1rem; font-size: 1rem; font-weight: 600; border-radius: 0.5rem; border: none; cursor: pointer; text-decoration: none; background: var(--primary); color: white; transition: background 0.2s; margin-top: 0.5rem; }
+        .btn:hover { background: var(--primary-hover); }
+        
+        .auth-footer { margin-top: 1.5rem; text-align: center; font-size: 0.9rem; color: var(--text-muted); }
+        .auth-footer a { color: var(--primary); text-decoration: none; font-weight: 600; }
+        .auth-footer a:hover { text-decoration: underline; }
+        
+        .alert { padding: 0.75rem 1rem; border-radius: 0.5rem; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        .alert-danger { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
+        
+        footer { background: #111827; color: #9ca3af; text-align: center; padding: 1.25rem; font-size: 0.875rem; margin-top: auto; }
+    </style>
+</head>
+<body>
+    <header class="navbar">
+        <a href="${pageContext.request.contextPath}/" class="navbar-brand">✈ Flight Reservation</a>
+        <nav class="navbar-links">
+            <a href="${pageContext.request.contextPath}/">Home</a>
+            <a href="${pageContext.request.contextPath}/login">Login</a>
+            <a href="${pageContext.request.contextPath}/signup" class="active">Sign Up</a>
+        </nav>
+    </header>
+
+    <div class="auth-container">
+        <div class="auth-card">
+            <h2>👤 Sign Up</h2>
+            <p class="sub">Create an account to start booking flights</p>
+
+            <c:if test="${not empty error}">
+                <div class="alert alert-danger">${error}</div>
+            </c:if>
+
+            <form:form action="${pageContext.request.contextPath}/signup" method="post" modelAttribute="signUpDto">
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <form:input path="email" id="email" type="email" placeholder="Enter your email" required="required" autocomplete="email" />
+                    <!-- Spring Forms Server-Side Validation Error -->
+                    <form:errors path="email" cssClass="field-error" />
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <form:input path="password" id="password" type="password" placeholder="Enter your password" required="required" minlength="9" autocomplete="new-password" />
+                    <div class="hint">Must be at least 9 characters long</div>
+                    <!-- Spring Forms Server-Side Validation Error -->
+                    <form:errors path="password" cssClass="field-error" />
+                </div>
+
+                <div class="form-group">
+                    <label for="role">Role</label>
+                    <form:select path="role" id="role" required="required">
+                        <form:option value="" label="-- Select Role --" />
+                        <form:option value="user" label="User" />
+                        <form:option value="admin" label="Admin" />
+                    </form:select>
+                    <!-- Spring Forms Server-Side Validation Error -->
+                    <form:errors path="role" cssClass="field-error" />
+                </div>
+
+                <button type="submit" class="btn">👤 Sign Up</button>
+            </form:form>
+
+            <div class="auth-footer">
+                Already have an account? <a href="${pageContext.request.contextPath}/login">Login here</a>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        &copy; 2026 Flight Reservation System. All rights reserved.
+    </footer>
+</body>
+</html>
+}
